@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+<title>Оплата GIFTORYX</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<script src="https://unpkg.com/@tonconnect/ui@2/dist/tonconnect-ui.min.js"></script>
+<script src="paycell.js"></script>
+<style>
+  :root { --bg: var(--tg-theme-bg-color, #12161f); --fg: var(--tg-theme-text-color, #fff);
+          --hint: var(--tg-theme-hint-color, #8b93a7); --btn: var(--tg-theme-button-color, #3d8bff);
+          --btnfg: var(--tg-theme-button-text-color, #fff); --card: var(--tg-theme-secondary-bg-color, #1c2230); }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, system-ui, Roboto, sans-serif; background: var(--bg); color: var(--fg);
+         min-height: 100vh; display: flex; flex-direction: column; align-items: center; padding: 28px 18px; }
+  .logo { width: 72px; height: 72px; border-radius: 20px; }
+  h1 { font-size: 20px; margin: 14px 0 4px; }
+  .sub { color: var(--hint); font-size: 14px; margin-bottom: 22px; text-align: center; }
+  .card { background: var(--card); border-radius: 16px; padding: 18px; width: 100%; max-width: 380px; }
+  .row { display: flex; justify-content: space-between; padding: 7px 0; font-size: 15px; }
+  .row span:first-child { color: var(--hint); }
+  .sum { font-size: 30px; font-weight: 700; text-align: center; margin: 4px 0 10px; }
+  button { width: 100%; max-width: 380px; margin-top: 18px; padding: 15px; border: 0; border-radius: 14px;
+           background: var(--btn); color: var(--btnfg); font-size: 17px; font-weight: 600; }
+  button:disabled { opacity: .55; }
+  #msg { margin-top: 16px; font-size: 14px; color: var(--hint); text-align: center; max-width: 380px; min-height: 20px; }
+  #wallet { margin-top: 10px; font-size: 13px; color: var(--hint); }
+  #wallet a { color: var(--btn); }
+  .ok { color: #3ccf7a !important; }
+  .err { color: #ff6b6b !important; }
+</style>
+</head>
+<body>
+  <img class="logo" src="icon.png" alt="">
+  <h1>Доступ в закрытый канал и чат</h1>
+  <div class="sub">Оплата прямо из твоего кошелька — нажми и подтверди</div>
+
+  <div class="card">
+    <div class="sum" id="sum">…</div>
+    <div class="row"><span>Сеть</span><span>TON</span></div>
+    <div class="row"><span>Получатель</span><span id="to">…</span></div>
+  </div>
+
+  <button id="pay">Подключить кошелёк</button>
+  <div id="wallet"></div>
+  <div id="msg"></div>
+
+<script>
+const tg = window.Telegram && Telegram.WebApp;
+if (tg) { tg.ready(); tg.expand(); }
+
+const q = new URLSearchParams(location.search);
+const ASSET = q.get("a") || "ton";            // ton | usdt
+const AMOUNT = q.get("amt") || "0";           // в нано-TON или в микро-USDT
+const TO = q.get("to") || "";                 // адрес получателя
+const COMMENT = q.get("c") || "";             // GX123 — по нему бот узнаёт платёж
+const JETTON = q.get("j") || "EQCxE6mUtQJKFnGfaROTKOt1lZbDiiX1kCixRv7Nw2Id_sDs";
+const BOT = q.get("bot") || "";
+
+const dec = ASSET === "ton" ? 9 : 6;
+const human = (Number(AMOUNT) / 10 ** dec).toLocaleString("ru-RU", { maximumFractionDigits: dec });
+document.getElementById("sum").textContent = human + (ASSET === "ton" ? " TON" : " USDT");
+document.getElementById("to").textContent = TO ? TO.slice(0, 4) + "…" + TO.slice(-4) : "—";
+
+const btn = document.getElementById("pay");
+const msg = document.getElementById("msg");
+const walletEl = document.getElementById("wallet");
+function say(t, cls) { msg.textContent = t; msg.className = cls || ""; }
+
+const ui = new TON_CONNECT_UI.TonConnectUI({
+  manifestUrl: new URL("tonconnect-manifest.json", location.href).href,
+  language: "ru",
+  actionsConfiguration: BOT ? { twaReturnUrl: "https://t.me/" + BOT } : {},
+});
+
+function refresh() {
+  const w = ui.wallet;
+  if (w) {
+    btn.textContent = "Оплатить " + document.getElementById("sum").textContent;
+    walletEl.innerHTML = "Кошелёк подключён · <a href='#' id='off'>сменить</a>";
+    document.getElementById("off").onclick = (e) => { e.preventDefault(); ui.disconnect(); };
+  } else {
+    btn.textContent = "Подключить кошелёк";
+    walletEl.textContent = "";
+  }
+}
+ui.onStatusChange(refresh);
+ui.connectionRestored.then(refresh);
+
+async function jettonWalletOf(owner) {
+  const u = "https://toncenter.com/api/v3/jetton/wallets?limit=1&owner_address=" +
+            encodeURIComponent(owner) + "&jetton_address=" + encodeURIComponent(JETTON);
+  const r = await fetch(u);
+  const d = await r.json();
+  const jw = (d.jetton_wallets || [])[0];
+  if (!jw) return null;
+  const book = d.address_book || {};
+  return (book[jw.address] && book[jw.address].user_friendly) || jw.address;
+}
+
+async function pay() {
+  if (!TO || !COMMENT || AMOUNT === "0") { say("Ссылка устарела. Вернись в бота и нажми «Оплатить» ещё раз.", "err"); return; }
+  if (!ui.wallet) { ui.openModal(); return; }
+  btn.disabled = true;
+  try {
+    let messages;
+    if (ASSET === "ton") {
+      messages = [{ address: TO, amount: AMOUNT, payload: PayCell.commentBoc(COMMENT) }];
+    } else {
+      say("Ищу твой USDT…");
+      const owner = ui.wallet.account.address;
+      const jw = await jettonWalletOf(owner);
+      if (!jw) { say("В этом кошельке нет USDT в сети TON.", "err"); btn.disabled = false; return; }
+      messages = [{ address: jw, amount: "50000000",   // 0.05 TON на комиссию, лишнее вернётся
+                    payload: PayCell.jettonTransferBoc(BigInt(AMOUNT), TO, owner, COMMENT) }];
+    }
+    say("Подтверди перевод в кошельке…");
+    await ui.sendTransaction({ validUntil: Math.floor(Date.now() / 1000) + 600, messages });
+    say("✅ Отправлено! Бот пришлёт ссылки на канал и чат через 1–2 минуты.", "ok");
+    btn.textContent = "Готово";
+    if (tg) setTimeout(() => tg.close(), 2500);
+  } catch (e) {
+    const t = String((e && e.message) || e);
+    if (/reject|declin|cancel|отклон/i.test(t)) say("Ты отменил перевод. Можно нажать ещё раз.", "err");
+    else say("Не получилось: " + t, "err");
+    btn.disabled = false;
+  }
+}
+btn.onclick = pay;
+</script>
+</body>
+</html>
